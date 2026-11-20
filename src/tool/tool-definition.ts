@@ -1,91 +1,84 @@
-import type { Tool, DeserializeResult } from '@itsjust/core';
+import type { Tool } from '@itsjust/core';
 import toolConfig from './tool.config';
-import type { ToolState, ConversionMode } from './types';
-import yaml from 'js-yaml';
+import type { CronState } from './types';
+import { parseCron, computeNextRuns, PRESETS, type NextRun } from '../lib/cron-parser';
 
-function isToolState(value: unknown): value is ToolState {
+function isCronState(value: unknown): value is CronState {
   if (typeof value !== 'object' || value === null) return false;
-  const v = value as Partial<ToolState>;
+  const v = value as Partial<CronState>;
   return (
-    typeof v.input === 'string' &&
-    typeof v.output === 'string' &&
-    (v.mode === 'yaml-to-json' || v.mode === 'json-to-yaml')
+    typeof v.expression === 'string' &&
+    typeof v.useSeconds === 'boolean' &&
+    (v.dayFieldMode === 'dom' || v.dayFieldMode === 'dow') &&
+    typeof v.timezone === 'string' &&
+    (v.theme === 'dark' || v.theme === 'light') &&
+    Array.isArray(v.warnings) &&
+    (v.error === null || typeof v.error === 'string')
   );
 }
 
-export const yamlToJsonTool: Tool<ToolState> = {
+export const initialState: CronState = {
+  expression: '*/15 9-17 * * 1-5',
+  useSeconds: false,
+  dayFieldMode: 'dom',
+  timezone: 'UTC',
+  theme: 'dark',
+  warnings: [],
+  error: null,
+  nextRunsJSON: '',
+  selectedPreset: 'Weekdays 9-5 every 15min',
+};
+
+export const cronTool: Tool<CronState> = {
   id: toolConfig.id,
   name: toolConfig.name,
   version: toolConfig.version,
   config: toolConfig,
-  initialState: {
-    input: 'name: John Doe\nage: 30\nskills:\n  - JavaScript\n  - TypeScript\nactive: true',
-    output: '',
-    mode: 'yaml-to-json',
-    indent: 2,
-    error: null,
-    autoConvert: true,
-  },
+  initialState,
   serialize: (state) => JSON.stringify(state),
-  deserialize: (data): DeserializeResult<ToolState> => {
+  deserialize: (data): import('@itsjust/core').DeserializeResult<CronState> => {
     try {
-      if (isToolState(data)) {
-        return { success: true, data: data };
-      }
-      return { success: false, error: 'Invalid data format: expected valid converter state' };
+      if (isCronState(data)) return { success: true, data };
+      return { success: false, error: 'Invalid data format: expected valid cron visualizer state' };
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Deserialization error';
       return { success: false, error: `Failed to deserialize state: ${message}` };
     }
   },
-  exporters: [
-    { format: 'png', loader: () => import('./exporters/png') },
-    { format: 'jpeg', loader: () => import('./exporters/jpeg') },
-    { format: 'webp', loader: () => import('./exporters/webp') },
-    { format: 'pdf', loader: () => import('./exporters/pdf') },
-  ],
 };
 
-/** Convert YAML↔JSON based on state.mode. Not part of the Tool contract. */
-export function convert(state: ToolState): ToolState {
-    if (!state.input.trim()) {
-      return { ...state, output: '', error: null };
-    }
-
-    try {
-      if (state.mode === 'yaml-to-json') {
-        const parsed = yaml.load(state.input);
-        const output = JSON.stringify(parsed, null, state.indent);
-        return { ...state, output, error: null };
-      } else {
-        const parsed = JSON.parse(state.input);
-        const output = yaml.dump(parsed, { indent: state.indent });
-        return { ...state, output, error: null };
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Conversion error';
-      return { ...state, output: '', error: message };
-    }
+export function evaluate(
+  state: CronState,
+  now: number = Date.now(),
+  count = 10
+): CronState & { nextRuns: NextRun[] } {
+  const parsed = parseCron(state.expression);
+  if (parsed.error || !parsed.fields) {
+    return {
+      ...state,
+      error: parsed.error ?? 'Invalid cron expression',
+      warnings: [],
+      nextRuns: [],
+    };
+  }
+  const nextRuns: NextRun[] = computeNextRuns(parsed.fields, state.timezone, now, count);
+  return { ...state, error: null, warnings: parsed.warnings ?? [], nextRuns };
 }
 
-// Back-compat alias for existing tests using the class-based name.
-export class YamlToJsonToolDefinition {
-  initialState: ToolState = yamlToJsonTool.initialState;
+export class CronToolDefinition {
+  initialState: CronState = cronTool.initialState;
 
-  serialize(state: ToolState): string {
-    return yamlToJsonTool.serialize(state);
+  serialize(state: CronState): string {
+    return cronTool.serialize(state);
   }
 
-  deserialize(serialized: string): DeserializeResult<ToolState> {
-    try {
-      const parsed: unknown = JSON.parse(serialized);
-      return yamlToJsonTool.deserialize(parsed);
-    } catch {
-      return { success: false, error: 'Invalid data format: expected valid converter state' };
-    }
+  deserialize(data: unknown): import('@itsjust/core').DeserializeResult<CronState> {
+    return cronTool.deserialize(data);
   }
 
-  convert(state: ToolState): ToolState {
-    return convert(state);
+  evaluate(state: CronState, now?: number): CronState & { nextRuns: NextRun[] } {
+    return evaluate(state, now);
   }
 }
+
+export { PRESETS };

@@ -1,33 +1,38 @@
 import { describe, it, expect } from 'vitest';
-import { YamlToJsonToolDefinition } from '../../src/tool/tool-definition';
-import type { ToolState } from '../../src/tool/types';
+import { CronToolDefinition, evaluate, initialState } from '@/tool/tool-definition';
+import type { CronState } from '@/tool/types';
 
-describe('YamlToJsonToolDefinition', () => {
-  const def = new YamlToJsonToolDefinition();
+describe('CronToolDefinition', () => {
+  const def = new CronToolDefinition();
 
-  it('should convert valid YAML to JSON', () => {
-    const state: ToolState = { ...def.initialState, mode: 'yaml-to-json', input: 'name: test\nvalue: 123' };
-    const res = def.convert(state);
+  it('evaluates a valid expression to next runs', () => {
+    const state: CronState = { ...initialState, expression: '0 2 * * *' };
+    const res = def.evaluate(state, Date.UTC(2026, 0, 1, 0, 0, 0));
     expect(res.error).toBeNull();
-    expect(JSON.parse(res.output)).toEqual({ name: 'test', value: 123 });
+    expect(res.nextRuns.length).toBe(10);
+    expect(res.nextRuns[0]!.utc).toBe(Date.UTC(2026, 0, 1, 2, 0, 0));
   });
 
-  it('should convert valid JSON to YAML', () => {
-    const state: ToolState = { ...def.initialState, mode: 'json-to-yaml', input: '{"name":"test","value":123}' };
-    const res = def.convert(state);
-    expect(res.error).toBeNull();
-    expect(res.output).toContain('name: test');
-  });
-
-  it('should report syntax errors for bad YAML', () => {
-    const state: ToolState = { ...def.initialState, mode: 'yaml-to-json', input: 'name: [unclosed' };
-    const res = def.convert(state);
+  it('reports errors for invalid expressions', () => {
+    const state: CronState = { ...initialState, expression: '61 * * * *' };
+    const res = def.evaluate(state);
     expect(res.error).not.toBeNull();
   });
 
-  it('should respect indentation settings', () => {
-    const state: ToolState = { ...def.initialState, mode: 'yaml-to-json', indent: 4, input: 'a: 1' };
-    const res = def.convert(state);
-    expect(res.output).toContain('    ');
+  it('adds warnings for wildcard conflicts', () => {
+    const res = evaluate({ ...initialState, expression: '0 0 1 * 1' });
+    expect(res.warnings.length).toBeGreaterThan(0);
+  });
+
+  it('round-trips state through serialize/deserialize', () => {
+    const state: CronState = {
+      ...initialState,
+      expression: '5 4 * * 1',
+      timezone: 'Europe/Berlin',
+    };
+    const json = def.serialize(state);
+    const back = def.deserialize(JSON.parse(json));
+    expect(back.success).toBe(true);
+    if (back.success) expect(back.data).toEqual(state);
   });
 });

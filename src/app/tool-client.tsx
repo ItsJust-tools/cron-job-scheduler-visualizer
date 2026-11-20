@@ -1,211 +1,142 @@
 'use client';
 
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ComponentType,
-  type ReactNode,
-} from 'react';
-import { ToolShell, useTool, ImportExport } from '@itsjust/core';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { compressToEncodedURIComponent, decompressFromEncodedURIComponent } from 'lz-string';
-import {
-  toolConfig,
-  templateBaseVersion,
-  ToolCanvas,
-  ToolToolbar,
-  ToolSidebar,
-} from '@/tool';
-import { notepadTool as notepadToolDef, type NotepadState } from '@/tool/notepad-state';
-
-const DEFAULT_FONT_SIZE = 16;
-const MIN_FONT_SIZE = 8;
-const MAX_FONT_SIZE = 72;
+import { cronTool, evaluate, initialState } from '@/tool/tool-definition';
+import type { CronState } from '@/tool/types';
+import { parseCron, computeNextRuns, computeHeatmap, applyDayFieldMode } from '@/lib/cron-parser';
+import { CronCanvas } from '@/tool/components/Canvas';
+import { CronToolbar } from '@/tool/components/Toolbar';
+import { CronSidebar } from '@/tool/components/Sidebar';
+import { toolConfig } from '@/tool/tool.config';
 
 export default function ToolClient() {
-  const ToolShellCompat = ToolShell as unknown as ComponentType<Record<string, unknown>> & {
-    Toolbar?: ComponentType<{ children?: ReactNode }>;
-    Body?: ComponentType<{ children?: ReactNode }>;
-    Sidebar?: ComponentType<{ children?: ReactNode }>;
-    Canvas?: ComponentType<{ children?: ReactNode }>;
-    StatusBar?: ComponentType<{ children?: ReactNode }>;
-  };
-  const canvasRef = useRef<HTMLDivElement>(null);
-  const tool = useTool<NotepadState>(notepadToolDef, canvasRef);
-  const setToolData = tool.state.setData;
-  const showToast = tool.toast;
-  const [isSharing, setIsSharing] = useState(false);
-  const hasLoadedSharedState = useRef(false);
-  const [sidebarOpen, setSidebarOpen] = useState<boolean>(
-    () => typeof window !== 'undefined' && window.innerWidth > 768 && toolConfig.features.sidebar
-  );
-  const [fontSize, setFontSize] = useState(DEFAULT_FONT_SIZE);
+  const [state, setState] = useState<CronState>(initialState);
+  const [toast, setToast] = useState<{ message: string; kind: 'success' | 'error' } | null>(null);
+  const loadedUrl = useRef(false);
 
-  const title = tool.state.data.title?.trim() || toolConfig.name;
-
-  useEffect(() => {
-    document.title = title;
-  }, [title]);
-
-  const handleTextChange = useCallback(
-    (text: string) => {
-      setToolData((prev) => ({ ...prev, content: text }));
-    },
-    [setToolData]
-  );
-
-  const handleFontSizeChange = useCallback((delta: number) => {
-    setFontSize((prev) => Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, prev + delta)));
+  const showToast = useCallback((message: string, kind: 'success' | 'error') => {
+    setToast({ message, kind });
+    window.setTimeout(() => setToast(null), 3000);
   }, []);
 
+  // Load shared state from URL once.
   useEffect(() => {
-    if (hasLoadedSharedState.current) return;
-    hasLoadedSharedState.current = true;
+    if (loadedUrl.current) return;
+    loadedUrl.current = true;
     const params = new URLSearchParams(window.location.search);
-    const encodedState = params.get('state');
-    if (!encodedState) return;
-    try {
-      const serialized = decompressFromEncodedURIComponent(encodedState);
-      if (!serialized) throw new Error('Invalid shared URL');
-      const parsed: unknown = JSON.parse(serialized);
-      const deserialized = notepadToolDef.deserialize(parsed);
-      if (!deserialized.success) throw new Error(deserialized.error);
-      setToolData(deserialized.data);
-      showToast('Loaded state from shared URL', 'success');
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to load shared URL';
-      showToast(message, 'error');
-    }
-  }, [setToolData, showToast]);
-
-  const handleShare = useCallback(async () => {
-    setIsSharing(true);
-    try {
-      const serialized = notepadToolDef.serialize(tool.state.data);
-      const encodedState = compressToEncodedURIComponent(serialized);
-      if (!encodedState) throw new Error('Failed to encode state for URL');
-      const url = new URL(window.location.href);
-      url.searchParams.set('state', encodedState);
-      url.searchParams.set('tool', toolConfig.id);
-      window.history.replaceState(null, '', url.toString());
-
-      const shareUrl = url.toString();
-      if (navigator.share) {
-        try {
-          await navigator.share({ title, url: shareUrl });
-          showToast('Shared URL ready', 'success');
-          return;
-        } catch (error) {
-          if (error instanceof Error && error.name === 'AbortError') return;
-        }
+    const encoded = params.get('state');
+    if (encoded) {
+      try {
+        const serialized = decompressFromEncodedURIComponent(encoded);
+        if (!serialized) throw new Error('Invalid shared URL');
+        const raw: unknown = JSON.parse(serialized);
+        const result = cronTool.deserialize(raw);
+        if (!result.success) throw new Error(result.error);
+        setState({ ...initialState, ...result.data });
+        showToast('Loaded state from shared URL', 'success');
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : 'Failed to load shared URL', 'error');
       }
-      await navigator.clipboard.writeText(shareUrl);
-      showToast('Share URL copied to clipboard', 'success');
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to create share URL';
-      showToast(message, 'error');
-    } finally {
-      setIsSharing(false);
+      return;
     }
-  }, [showToast, tool.state.data, title]);
+    // Theme persisted in URL state: prefer ?theme= if present.
+    const theme = params.get('theme');
+    if (theme === 'light' || theme === 'dark') {
+      setState((s) => ({ ...s, theme }));
+    }
+  }, [showToast]);
 
-  const toolbarContent = (
-    <>
-      <ToolToolbar />
-      <ImportExport
-        formats={tool.supportedFormats}
-        onExport={tool.handleExport}
-        onImport={tool.importFromFile}
-        isImporting={tool.isImporting}
-        onShare={handleShare}
-        isSharing={isSharing}
-      />
-    </>
-  );
+  // Keep ?theme= in the URL on toggle (persisted URL state).
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (url.searchParams.get('theme') !== state.theme) {
+      url.searchParams.set('theme', state.theme);
+      window.history.replaceState(null, '', url.toString());
+    }
+  }, [state.theme]);
 
-  const sidebarContent = (
-    <ToolSidebar text={tool.state.data.content} fontSize={fontSize} onFontSizeChange={handleFontSizeChange} />
-  );
+  const parsed = useMemo(() => parseCron(state.expression), [state.expression]);
 
-  const canvasContent = (
-    <ToolCanvas
-      canvasRef={canvasRef}
-      text={tool.state.data.content}
-      fontSize={fontSize}
-      onChange={handleTextChange}
-    />
-  );
+  const nextRuns = useMemo(() => {
+    if (!parsed.fields) return [];
+    try {
+      return computeNextRuns(parsed.fields, state.timezone, Date.now(), 10);
+    } catch {
+      return [];
+    }
+  }, [parsed, state.timezone]);
 
-  const statusBarContent = (
-    <>
-      <span
-        className={`status-slot status-slot-state ${tool.state.isDirty ? 'status-unsaved' : 'status-saved'}`}
-      >
-        {tool.state.isDirty ? (
-          <>
-            <span className="status-saving-dot" />
-            Unsaved
-          </>
-        ) : tool.state.lastSaved ? (
-          <>Saved {tool.state.lastSaved}</>
-        ) : (
-          'Ready'
-        )}
-      </span>
-      <span className="status-slot status-slot-font-size">{fontSize}px</span>
-      <span className="status-slot status-slot-tool-version">Tool v{toolConfig.version}</span>
-      <span className="status-slot status-slot-template-version">
-        Template v{templateBaseVersion}
-      </span>
-    </>
-  );
+  const heatmap = useMemo(() => {
+    if (!parsed.fields) return { cells: [], dayLabels: [] };
+    try {
+      return computeHeatmap(parsed.fields, state.timezone, Date.now(), 7);
+    } catch {
+      return { cells: [], dayLabels: [] };
+    }
+  }, [parsed, state.timezone]);
 
-  const hasLegacySections = Boolean(
-    ToolShellCompat.Toolbar &&
-    ToolShellCompat.Body &&
-    ToolShellCompat.Sidebar &&
-    ToolShellCompat.Canvas &&
-    ToolShellCompat.StatusBar
+  const onStateChange = useCallback((patch: Partial<CronState>) => {
+    setState((prev) => ({ ...prev, ...patch }));
+  }, []);
+
+  const onApplyDayFieldMode = useCallback((mode: 'dom' | 'dow') => {
+    setState((prev) => {
+      const { expression, error } = applyDayFieldMode(prev.expression, mode);
+      return { ...prev, expression, error: error ?? null, dayFieldMode: mode };
+    });
+  }, []);
+
+  const onCopy = useCallback(
+    async (text: string, label: string) => {
+      try {
+        await navigator.clipboard.writeText(text);
+        showToast(label, 'success');
+      } catch {
+        showToast('Clipboard write failed', 'error');
+      }
+    },
+    [showToast]
   );
 
   return (
-    <ToolShellCompat
-      config={toolConfig}
-      actions={useMemo(() => tool.toolbarActions, [tool.toolbarActions])}
-      sidebarOpen={sidebarOpen}
-      onSidebarChange={setSidebarOpen}
-      toolbar={toolbarContent}
-      sidebar={sidebarContent}
-      canvas={canvasContent}
-      statusBar={statusBarContent}
-    >
-      {hasLegacySections
-        ? (() => {
-            const ToolbarSection = ToolShellCompat.Toolbar as ComponentType<{
-              children?: ReactNode;
-            }>;
-            const BodySection = ToolShellCompat.Body as ComponentType<{ children?: ReactNode }>;
-            const SidebarSection = ToolShellCompat.Sidebar as ComponentType<{
-              children?: ReactNode;
-            }>;
-            const CanvasSection = ToolShellCompat.Canvas as ComponentType<{ children?: ReactNode }>;
-            const StatusBarSection = ToolShellCompat.StatusBar as ComponentType<{
-              children?: ReactNode;
-            }>;
-            return (
-              <>
-                <ToolbarSection>{toolbarContent}</ToolbarSection>
-                <BodySection>
-                  <SidebarSection>{sidebarContent}</SidebarSection>
-                  <CanvasSection>{canvasContent}</CanvasSection>
-                </BodySection>
-                <StatusBarSection>{statusBarContent}</StatusBarSection>
-              </>
-            );
-          })()
-        : null}
-    </ToolShellCompat>
+    <div className={`cron-app cron-${state.theme}`} data-tool-id={toolConfig.id}>
+      <header className="cron-header">
+        <h1>{toolConfig.name}</h1>
+        <p className="cron-tagline">{toolConfig.description}</p>
+      </header>
+      <CronToolbar
+        state={state}
+        onStateChange={onStateChange}
+        onApplyDayFieldMode={onApplyDayFieldMode}
+      />
+      <div className="cron-body">
+        <CronSidebar state={state} onStateChange={onStateChange} />
+        <main className="cron-main">
+          <CronCanvas
+            state={{
+              ...state,
+              error: parsed.error ?? null,
+              warnings: state.error ? [] : (parsed.warnings ?? []),
+            }}
+            nextRuns={nextRuns}
+            cells={heatmap.cells}
+            dayLabels={heatmap.dayLabels}
+            onCopy={onCopy}
+          />
+        </main>
+      </div>
+      {toast && (
+        <div
+          className={`cron-toast cron-toast-${toast.kind}`}
+          role="status"
+          data-testid="cron-toast"
+        >
+          {toast.message}
+        </div>
+      )}
+    </div>
   );
 }
+
+export { evaluate };

@@ -1,86 +1,131 @@
-import React from 'react';
-import { ToolState } from '../types';
+import { CronState } from '../types';
+import { NextRun } from '../../lib/cron-parser';
 
-interface CanvasProps {
-  state: ToolState;
-  onChange: (state: ToolState) => void;
+interface CronCanvasProps {
+  state: CronState;
+  nextRuns: NextRun[];
+  cells: { day: string; hour: number; count: number }[];
+  dayLabels: string[];
+  onCopy: (text: string, label: string) => void;
 }
 
-export const Canvas: React.FC<CanvasProps> = ({ state, onChange }) => {
-  const handleInput = (val: string) => {
-    const newState = { ...state, input: val };
-    onChange(newState);
-  };
+const TIMEZONES = [
+  'UTC',
+  'Europe/Berlin',
+  'Europe/London',
+  'America/New_York',
+  'America/Chicago',
+  'America/Los_Angeles',
+  'Asia/Tokyo',
+  'Asia/Kolkata',
+  'Australia/Sydney',
+  'Pacific/Auckland',
+];
 
-  const copyOutput = () => {
-    navigator.clipboard.writeText(state.output);
-  };
+export function CronCanvas({ state, nextRuns, cells, dayLabels, onCopy }: CronCanvasProps) {
+  const dark = state.theme === 'dark';
+  const maxCount = Math.max(1, ...cells.map((c) => c.count));
 
-  const downloadOutput = () => {
-    const ext = state.mode === 'yaml-to-json' ? 'json' : 'yaml';
-    const blob = new Blob([state.output], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `converted.${ext}`;
-    a.click();
-    URL.revokeObjectURL(url);
+  const copyAs = (format: 'json' | 'text') => {
+    if (format === 'json') {
+      onCopy(
+        JSON.stringify(
+          nextRuns.map((r) => ({ utc: r.utc, iso: r.iso, local: r.label })),
+          null,
+          2
+        ),
+        'Next runs copied as JSON'
+      );
+    } else {
+      onCopy(nextRuns.map((r, i) => `${i + 1}. ${r.label}`).join('\n'), 'Next runs copied as text');
+    }
   };
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 p-4 h-[calc(100vh-120px)] overflow-hidden">
-      <div className="flex flex-col h-full">
-        <div className="flex items-center justify-between mb-2">
-          <label className="text-xs font-medium text-gray-700 dark:text-gray-300 uppercase tracking-wider">
-            Input ({state.mode === 'yaml-to-json' ? 'YAML' : 'JSON'})
-          </label>
+    <div
+      className={`cron-canvas ${dark ? 'cron-dark' : 'cron-light'}`}
+      role="application"
+      aria-label="Cron schedule visualizer"
+      data-testid="cron-canvas"
+    >
+      {state.error ? (
+        <div className="cron-error" role="alert" data-testid="cron-error">
+          Invalid expression: {state.error}
         </div>
-        <textarea
-          value={state.input}
-          onChange={(e) => handleInput(e.target.value)}
-          placeholder={`Enter ${state.mode === 'yaml-to-json' ? 'YAML' : 'JSON'} here...`}
-          className="flex-1 w-full rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 p-3 font-mono text-xs text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
-          spellCheck={false}
-        />
-      </div>
+      ) : (
+        <>
+          {state.warnings.length > 0 && (
+            <div className="cron-warnings" data-testid="cron-warnings">
+              {state.warnings.map((w, i) => (
+                <div key={i} className="cron-warning" role="status">
+                  ⚠ {w}
+                </div>
+              ))}
+            </div>
+          )}
 
-      <div className="flex flex-col h-full">
-        <div className="flex items-center justify-between mb-2">
-          <label className="text-xs font-medium text-gray-700 dark:text-gray-300 uppercase tracking-wider">
-            Output ({state.mode === 'yaml-to-json' ? 'JSON' : 'YAML'})
-          </label>
-          {state.output && (
-            <div className="flex items-center gap-2">
-              <button
-                onClick={copyOutput}
-                className="text-xs px-2 py-1 rounded bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700"
-              >
-                Copy
-              </button>
-              <button
-                onClick={downloadOutput}
-                className="text-xs px-2 py-1 rounded bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700"
-              >
-                Download
-              </button>
+          <section className="cron-section" aria-label="Next scheduled runs">
+            <div className="cron-section-head">
+              <h3>Next runs ({state.timezone})</h3>
+              <div className="cron-copy-buttons">
+                <button onClick={() => copyAs('json')} aria-label="Copy next runs as JSON">
+                  Copy JSON
+                </button>
+                <button onClick={() => copyAs('text')} aria-label="Copy next runs as plain text">
+                  Copy text
+                </button>
+              </div>
             </div>
-          )}
-        </div>
-        <div className="relative flex-1 flex flex-col h-full">
-          <textarea
-            value={state.output}
-            readOnly
-            placeholder="Converted output will appear here..."
-            className="flex-1 w-full rounded-md border border-gray-300 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-3 font-mono text-xs text-gray-900 dark:text-gray-100 focus:outline-none resize-none"
-            spellCheck={false}
-          />
-          {state.error && (
-            <div className="absolute bottom-3 left-3 right-3 bg-red-100 dark:bg-red-900/50 border border-red-300 dark:border-red-700 text-red-700 dark:text-red-300 px-3 py-2 rounded text-xs">
-              {state.error}
+            {nextRuns.length === 0 ? (
+              <p className="cron-empty">No upcoming runs within the search window.</p>
+            ) : (
+              <ol className="cron-runs" data-testid="next-runs">
+                {nextRuns.map((r, i) => (
+                  <li key={r.utc}>
+                    <span className="cron-run-index">{i + 1}</span>
+                    <span className="cron-run-label">{r.label}</span>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </section>
+
+          <section className="cron-section" aria-label="Weekly fire-time heatmap">
+            <h3>Fire-time heatmap (next 7 days × 24h)</h3>
+            <div className="cron-heatmap" data-testid="cron-heatmap">
+              <div className="cron-heatmap-hours" aria-hidden="true">
+                {Array.from({ length: 24 }, (_, h) => (
+                  <div key={h} className="cron-heatmap-hour-label">
+                    {h.toString().padStart(2, '0')}
+                  </div>
+                ))}
+              </div>
+              {dayLabels.map((label, di) => (
+                <div key={di} className="cron-heatmap-row">
+                  <span className="cron-heatmap-day-label">{label}</span>
+                  <div className="cron-heatmap-cells">
+                    {cells.slice(di * 24, di * 24 + 24).map((c, hi) => (
+                      <div
+                        key={hi}
+                        className="cron-heatmap-cell"
+                        title={`${c.day} ${String(c.hour).padStart(2, '0')}:00 — ${c.count} fire${c.count === 1 ? '' : 's'}`}
+                        style={{
+                          backgroundColor:
+                            c.count === 0
+                              ? 'transparent'
+                              : `rgba(59,130,246,${0.2 + 0.8 * (c.count / maxCount)})`,
+                        }}
+                      />
+                    ))}
+                  </div>
+                </div>
+              ))}
             </div>
-          )}
-        </div>
-      </div>
+          </section>
+        </>
+      )}
     </div>
   );
-};
+}
+
+export { TIMEZONES };

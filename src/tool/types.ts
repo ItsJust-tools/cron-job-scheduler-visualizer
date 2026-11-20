@@ -1,10 +1,11 @@
-export type ConversionMode = 'yaml-to-json' | 'json-to-yaml';
-
-export interface ToolState {
-  input: string;
-  output: string;
-  mode: ConversionMode;
-  indent: number;
+export interface CronState {
+  expression: string;
+  useSeconds: boolean;
+  dayFieldMode: 'dom' | 'dow';
+  timezone: string;
+  theme: 'dark' | 'light';
+  warnings: string[];
   error: string | null;
-  autoConvert: boolean;
+  nextRunsJSON: string;
+  selectedPreset: string | null;
 }

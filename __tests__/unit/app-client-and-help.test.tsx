@@ -16,76 +16,16 @@ vi.mock('next/dynamic', () => ({
   default: () => () => <div data-testid="dynamic-tool-client">dynamic-tool-client</div>,
 }));
 
-const mockSetData = vi.fn();
-const mockToast = vi.fn();
-const mockHandleExport = vi.fn();
-const mockImport = vi.fn();
-const mockToolbarActions = { canUndo: true, canRedo: true, onUndo: vi.fn(), onRedo: vi.fn() };
-
-vi.mock('@itsjust/core', () => ({
-  ToolShell: ({ toolbar, sidebar, canvas, statusBar }: Record<string, unknown>) => (
-    <div>
-      <div>{toolbar as ReactNode}</div>
-      <div>{sidebar as ReactNode}</div>
-      <div>{canvas as ReactNode}</div>
-      <div>{statusBar as ReactNode}</div>
-    </div>
-  ),
-  ImportExport: ({ onShare }: { onShare?: () => void }) => (
-    <button type="button" onClick={onShare}>
-      trigger-share
-    </button>
-  ),
-  useTool: () => ({
-    state: {
-      data: { text: 'Hello' },
-      setData: mockSetData,
-      isDirty: false,
-      lastSaved: 'just now',
-    },
-    toast: mockToast,
-    supportedFormats: ['json'],
-    handleExport: mockHandleExport,
-    importFromFile: mockImport,
-    isImporting: false,
-    toolbarActions: mockToolbarActions,
-  }),
-}));
-
-vi.mock('@/tool', () => ({
-  toolConfig: {
-    id: 'simple-notepad',
-    name: 'Notepad',
-    version: '1.0.0',
-    features: { sidebar: true },
-    theme: { brand: 'Notepad' },
-  },
-  templateBaseVersion: '1.1.0',
-  ToolCanvas: ({ text }: { text: string }) => <div>canvas:{text}</div>,
-  ToolToolbar: () => <div>toolbar</div>,
-  ToolSidebar: ({ text }: { text: string }) => <div>sidebar:{text}</div>,
-}));
-
-vi.mock('@/tool/notepad-state', () => ({
-  notepadTool: {
-    serialize: (state: unknown) => JSON.stringify(state),
-    deserialize: () => ({ success: true, data: { content: 'From Shared Url', title: '' } }),
-  },
-}));
+const mockWriteText = vi.fn().mockResolvedValue(undefined);
 
 describe('app client and help page', () => {
   beforeEach(() => {
-    mockSetData.mockReset();
-    mockToast.mockReset();
+    mockWriteText.mockClear();
     Object.defineProperty(navigator, 'clipboard', {
       writable: true,
-      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+      value: { writeText: mockWriteText },
     });
-    Object.defineProperty(navigator, 'share', {
-      writable: true,
-      value: vi.fn().mockResolvedValue(undefined),
-    });
-    window.history.replaceState(null, '', 'http://localhost:3000/?state=e30%3D');
+    window.history.replaceState(null, '', 'http://localhost:3000/');
   });
 
   it('renders dynamic tool client wrapper', () => {
@@ -93,12 +33,46 @@ describe('app client and help page', () => {
     expect(screen.getByTestId('dynamic-tool-client')).toBeInTheDocument();
   });
 
-  it('handles share flow in tool client', async () => {
+  it('renders the cron visualizer UI with toolbar, sidebar and canvas', () => {
     render(<ToolClient />);
+    expect(screen.getByTestId('cron-toolbar')).toBeInTheDocument();
+    expect(screen.getByTestId('cron-sidebar')).toBeInTheDocument();
+    expect(screen.getByTestId('cron-canvas')).toBeInTheDocument();
+    expect(screen.getByText('Cron Job Scheduler Visualizer')).toBeInTheDocument();
+    // Default state: preset expression is pre-filled
+    expect((screen.getByLabelText('Cron expression') as HTMLInputElement).value).toBe(
+      '*/15 9-17 * * 1-5'
+    );
+  });
 
-    expect(screen.getByText('toolbar')).toBeInTheDocument();
-    fireEvent.click(screen.getByText('trigger-share'));
+  it('shows heatmap and next runs for the default schedule', () => {
+    render(<ToolClient />);
+    expect(screen.getByTestId('cron-heatmap')).toBeInTheDocument();
+    expect(screen.getByTestId('next-runs')).toBeInTheDocument();
+  });
 
-    expect(mockToast).toHaveBeenCalled();
+  it('shows descriptive error UI for an invalid expression without crashing', () => {
+    window.history.replaceState(null, '', 'http://localhost:3000/?theme=dark');
+    render(<ToolClient />);
+    const input = screen.getByLabelText('Cron expression') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'banana' } });
+    expect(screen.getByTestId('cron-error')).toBeInTheDocument();
+    // UI is still interactive afterwards
+    expect(screen.getByTestId('cron-toolbar')).toBeInTheDocument();
+    expect(screen.getByTestId('cron-canvas')).toBeInTheDocument();
+  });
+
+  it('copies next runs as JSON to clipboard', async () => {
+    render(<ToolClient />);
+    fireEvent.click(screen.getByLabelText('Copy next runs as JSON'));
+    await vi.waitFor(() => expect(mockWriteText).toHaveBeenCalled());
+    const written = (mockWriteText.mock.calls[0]?.[0] ?? '') as string;
+    expect(() => JSON.parse(written)).not.toThrow();
+  });
+
+  it('theme toggle updates the URL', () => {
+    render(<ToolClient />);
+    fireEvent.click(screen.getByTestId('theme-toggle'));
+    expect(new URLSearchParams(window.location.search).get('theme')).toBe('light');
   });
 });

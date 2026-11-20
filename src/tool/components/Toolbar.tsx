@@ -1,55 +1,74 @@
-import React from 'react';
-import { ToolState } from '../types';
+import { CronState } from '../types';
+import { PRESETS } from '../../lib/cron-parser';
 
-interface ToolbarProps {
-  state: ToolState;
-  onChange: (state: ToolState) => void;
-  onConvert: () => void;
-  onClear: () => void;
+interface CronToolbarProps {
+  state: CronState;
+  onStateChange: (patch: Partial<CronState>) => void;
+  onApplyDayFieldMode: (mode: 'dom' | 'dow') => void;
 }
 
-export const Toolbar: React.FC<ToolbarProps> = ({ state, onChange, onConvert, onClear }) => {
+export function CronToolbar({ state, onStateChange, onApplyDayFieldMode }: CronToolbarProps) {
+  const dark = state.theme === 'dark';
   return (
-    <div className="flex flex-wrap items-center justify-between gap-4 p-4 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900">
-      <div className="flex items-center gap-2">
+    <div className={`cron-toolbar ${dark ? 'cron-dark' : 'cron-light'}`} data-testid="cron-toolbar">
+      <input
+        className="cron-expression-input"
+        type="text"
+        value={state.expression}
+        onChange={(e) => onStateChange({ expression: e.target.value, selectedPreset: null })}
+        aria-label="Cron expression"
+        placeholder="*/15 9-17 * * 1-5"
+        spellCheck={false}
+      />
+      <select
+        className="cron-tz-select"
+        value={state.timezone}
+        onChange={(e) => onStateChange({ timezone: e.target.value })}
+        aria-label="Timezone"
+      >
+        {[
+          'UTC',
+          'Europe/Berlin',
+          'Europe/London',
+          'America/New_York',
+          'America/Chicago',
+          'America/Los_Angeles',
+          'Asia/Tokyo',
+          'Asia/Kolkata',
+          'Australia/Sydney',
+          'Pacific/Auckland',
+        ].map((tz) => (
+          <option key={tz} value={tz}>
+            {tz}
+          </option>
+        ))}
+      </select>
+      <div className="cron-mode-toggle" role="group" aria-label="Day field mode">
         <button
-          onClick={() => onChange({ ...state, mode: 'yaml-to-json', input: state.output, output: '' })}
-          className={`px-3 py-1.5 text-xs font-medium rounded-md ${
-            state.mode === 'yaml-to-json'
-              ? 'bg-indigo-600 text-white'
-              : 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'
-          }`}
+          className={state.dayFieldMode === 'dom' ? 'active' : ''}
+          onClick={() => onApplyDayFieldMode('dom')}
+          aria-pressed={state.dayFieldMode === 'dom'}
         >
-          YAML to JSON
+          Day of month
         </button>
         <button
-          onClick={() => onChange({ ...state, mode: 'json-to-yaml', input: state.output, output: '' })}
-          className={`px-3 py-1.5 text-xs font-medium rounded-md ${
-            state.mode === 'json-to-yaml'
-              ? 'bg-indigo-600 text-white'
-              : 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'
-          }`}
+          className={state.dayFieldMode === 'dow' ? 'active' : ''}
+          onClick={() => onApplyDayFieldMode('dow')}
+          aria-pressed={state.dayFieldMode === 'dow'}
         >
-          JSON to YAML
+          Day of week
         </button>
       </div>
-
-      <div className="flex items-center gap-2">
-        {!state.autoConvert && (
-          <button
-            onClick={onConvert}
-            className="px-3 py-1.5 text-xs font-medium rounded-md bg-green-600 text-white hover:bg-green-700"
-          >
-            Convert
-          </button>
-        )}
-        <button
-          onClick={onClear}
-          className="px-3 py-1.5 text-xs font-medium rounded-md bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700"
-        >
-          Clear
-        </button>
-      </div>
+      <button
+        className="cron-theme-toggle"
+        onClick={() => onStateChange({ theme: dark ? 'light' : 'dark' })}
+        aria-label="Toggle theme"
+        data-testid="theme-toggle"
+      >
+        {dark ? '☀ Light' : '🌙 Dark'}
+      </button>
     </div>
   );
-};
+}
+
+export const PRESET_LIST = PRESETS;
